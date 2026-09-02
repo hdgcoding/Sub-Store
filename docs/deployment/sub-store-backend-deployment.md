@@ -1,9 +1,40 @@
 # Sub-Store 后端安装与订阅转换部署记录
 
-> 最后核对日期：2026-06-06  
+> 最后核对日期：2026-09-02  
 > 用途：供后续维护者或其他 AI 复现、排错和继续改造  
-> 仓库提交：`9ecf9d6aa3f3aa39da7e75aa9e469adb636b1d7d`  
-> Sub-Store 版本：`2.24.7`
+> 首次部署基于仓库提交：`9ecf9d6aa3f3aa39da7e75aa9e469adb636b1d7d`（Sub-Store 版本 `2.24.7`）
+
+## 当前状态速览（AI / 新维护者先读这里）
+
+> 本文档主体是按时间顺序沉淀的部署记录（第 4-17 节为首次部署的历史操作步骤），**当前实际状态以下表和 2.1、18.1 节为准**。执行变更前先对照本节确认，不要盲目按历史章节重做。
+
+| 项 | 当前状态 |
+| --- | --- |
+| 服务器 | 阿里云 `47.116.182.13`（Alibaba Cloud Linux 3，Node v20.20.2），SSH 信息见 2.1 |
+| 后端 | systemd 服务 `sub-store`，监听 `0.0.0.0:3000`，数据目录 `/var/lib/sub-store` |
+| 对外入口 | nginx 443 反代 → `https://sub.minor.link/<PREFIX>/...`（3000 端口未对公网放行，**这是刻意配置**） |
+| 使用模式 | 仅快照模式：`/share/file/<NAME>` 输出完整白名单 Mihomo 配置 |
+| 节点保鲜 | crontab `23 * * * *` 运行 `/usr/local/bin/sub-store-refresh`（配置 `/etc/sub-store-refresh.json`），同名覆盖发布，订阅 URL 永不变化 |
+| 交互脚本 | `/usr/local/bin/sub-store-convert`（快照模式菜单 1-4），源码在仓库 `docs/deployment/sub-store-convert.sh` |
+| 已发布订阅 | JMS（已纳入自动刷新）、US-COMPANY（上游 URL 待补，未纳入自动刷新） |
+| 已明确废弃 | 实时模式（`/download`、`/api/subs`、原生 artifact 定时任务）——只能输出节点列表、无法生成完整配置，2026-09-02 移除 |
+
+常见任务 → 章节直达：
+
+| 任务 | 章节 |
+| --- | --- |
+| 新增/更换上游订阅并纳入自动刷新 | 18.1 |
+| 手动立即刷新 / 看刷新日志 | 18.1 手动操作 |
+| 发布一个新订阅（首次） | 13 菜单 1，然后 18.1 纳入刷新 |
+| 更换 API 前缀 | 9（env）+ 13（脚本头部）+ 18.1（刷新配置），改完 `systemctl restart sub-store` |
+| 升级后端版本 | 20 |
+| 排错 | 19（运维命令）+ 17（历史踩坑） |
+| 从零重装 / 换机 | 4 → 7 → 8 → 9 → 10 → 13 → 18.1 → 22 |
+
+注意事项：
+
+- 改完仓库里的 `sub-store-convert.sh` 后**必须重新 scp 到服务器**，服务器上的脚本不会自动更新（见 13 节）。
+- 全文占位符 `<PREFIX>` / `<SERVER_IP>` / `<PUBLIC_BASE>` 的实际值见 2.1。
 
 ## 0. 参考仓库与文档
 
@@ -66,30 +97,14 @@ Shadowrocket 是闭源客户端，没有可用于核对实现的官方开源仓�
 
 ## 1. 最终目标
 
-在服务器上部署纯 Sub-Store 后端，并提供一个交互命令：
+在服务器上部署纯 Sub-Store 后端（无 Web 前端），配合两个自研命令：
 
-```bash
-sub-store-convert
-```
+- `sub-store-convert`：交互式管理快照订阅（转换 → 发布 → `/share/file/<NAME>` 订阅 URL）。
+- `sub-store-refresh`：crontab 定时拉取上游订阅，重新生成为完整白名单 Mihomo 配置并同名覆盖。节点自动保鲜，订阅 URL 永不变化，客户端导入一次后无需任何操作。
 
-交互命令支持：
+生成的完整配置包含：`proxies`、`proxy-groups`、`rule-providers`、`rules`，使用 [Loyalsoldier/clash-rules](https://github.com/Loyalsoldier/clash-rules) 在线规则，支持白名单/黑名单策略。
 
-- 菜单式操作：新增、查看、修改、删除订阅。
-- 输入远程订阅 URL、本地文件路径或单个节点链接。
-- 输出 Clash Verge、Clash Meta/Mihomo、Shadowrocket 等格式。
-- 为 Mihomo 生成完整配置：
-  - `proxies`
-  - `proxy-groups`
-  - `rule-providers`
-  - `rules`
-- 使用 [Loyalsoldier/clash-rules](https://github.com/Loyalsoldier/clash-rules) 在线规则。
-- 选择白名单、黑名单或自定义规则策略。
-- 将结果发布成客户端可直接导入的订阅 URL。
-- 使用同一个发布名称重新生成时，更新原订阅内容并保持 URL 不变。
-
-本次部署不包含 Web 前端。Sub-Store 后端监听 `0.0.0.0:3000`，客户端通过 `http://<SERVER_IP>:3000/<PREFIX>/share/file/<NAME>` 访问订阅。
-
-> ⚠️ **2026-09-02 起实际架构已变更**：3000 端口未在阿里云安全组放行，公网不可直连；实际由 nginx 在 80/443/9090 反代到 `127.0.0.1:3000`。客户端一律走 `https://sub.minor.link/<PREFIX>/...`，详见 2.1 节。本文其余处出现的 `<SERVER_IP>:3000` 对外访问写法均应按此理解，仅服务器本机的 `127.0.0.1:3000` 仍然有效。
+对外访问统一走 `https://sub.minor.link/<PREFIX>/share/file/<NAME>`（nginx 反代，详见 2.1）。曾实现的实时 `/download` 模式已评估并放弃，原因与过程见 13 节开头及 18.1 历史说明。
 
 ## 2. 部署信息
 
@@ -142,25 +157,30 @@ ssh -i /Users/doghan/data/cloud/document/SSH_KEY/ALIYUN/aliyun_hdg root@47.116.1
 
 ### 访问地址
 
-后端基地址：
+后端基地址（公网，nginx 反代，客户端一律用这个）：
 
 ```text
-http://<SERVER_IP>:3000/<PREFIX>
+https://sub.minor.link/<PREFIX>
 ```
 
 示例订阅地址：
 
 ```text
-http://<SERVER_IP>:3000/<PREFIX>/share/file/clash-verge
+https://sub.minor.link/<PREFIX>/share/file/clash-verge
+```
+
+服务器本机调试地址（仅限 SSH 进服务器后使用）：
+
+```text
+http://127.0.0.1:3000/<PREFIX>
 ```
 
 ### 安全说明
 
 - API 前缀只是降低被扫描发现的概率，不是身份认证。
-- 使用 HTTP，订阅内容和节点信息在传输途中没有 TLS 保护。
-- 生产环境应使用 Nginx 反向代理 + HTTPS、访问控制或防火墙白名单。
+- 对外已由 nginx 统一提供 HTTPS（`sub.minor.link`）；3000 端口仅限服务器本机访问。
 - 不要把 SSH 私钥内容写入仓库。部署时只传入私钥路径。
-- 如果这份文档公开，应先更换 API 前缀。
+- 如果这份文档公开，应先更换 API 前缀（步骤见 2.1 注意事项）。
 - 防火墙/安全组**不要**放行 3000 端口（当前配置：仅 nginx 80/443/9090 对外）。
 
 ## 3. 已确认的仓库能力
@@ -922,11 +942,20 @@ ssh root@<SERVER_IP> 'systemctl restart sub-store'
 ## 21. 卸载
 
 ```bash
+# 定时刷新任务
+crontab -l | grep -v sub-store-refresh | crontab -
+rm -f /usr/local/bin/sub-store-refresh
+rm -f /etc/sub-store-refresh.json
+rm -f /var/log/sub-store-refresh.log
+
+# 后端服务
 systemctl disable --now sub-store
 rm -f /etc/systemd/system/sub-store.service
 systemctl daemon-reload
-rm -f /etc/sub-store.env
+
+# 交互脚本与其余组件
 rm -f /usr/local/bin/sub-store-convert
+rm -f /etc/sub-store.env
 rm -rf /opt/sub-store
 ```
 
@@ -955,6 +984,9 @@ userdel substore
 - [ ] 同名订阅更新成功
 - [ ] 菜单式操作：新增、查看、修改、删除
 - [ ] 删除操作使用序号选择 + 二次确认
+- [ ] crontab 存在 `23 * * * * sub-store-refresh` 定时任务
+- [ ] `sub-store-refresh` 手动执行成功，`/share/file/JMS` 返回 200 且内容更新
+- [ ] `/usr/local/bin/sub-store-convert` 与仓库脚本一致（占位符替换后 diff 为空）
 - [ ] Swap 2GB 配置完成
 - [ ] 在线规则通过 `PROXY` 下载
 - [ ] 重复 GEOIP 和额外 MMDB 初始化已移除
