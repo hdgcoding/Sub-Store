@@ -87,7 +87,9 @@ sub-store-convert
 - 将结果发布成客户端可直接导入的订阅 URL。
 - 使用同一个发布名称重新生成时，更新原订阅内容并保持 URL 不变。
 
-本次部署不包含 Web 前端。Sub-Store 后端直接监听 `0.0.0.0:3000`，客户端通过 `http://<SERVER_IP>:3000/<PREFIX>/share/file/<NAME>` 访问订阅。
+本次部署不包含 Web 前端。Sub-Store 后端监听 `0.0.0.0:3000`，客户端通过 `http://<SERVER_IP>:3000/<PREFIX>/share/file/<NAME>` 访问订阅。
+
+> ⚠️ **2026-09-02 起实际架构已变更**：3000 端口未在阿里云安全组放行，公网不可直连；实际由 nginx 在 80/443/9090 反代到 `127.0.0.1:3000`。客户端一律走 `https://sub.minor.link/<PREFIX>/...`，详见 2.1 节。本文其余处出现的 `<SERVER_IP>:3000` 对外访问写法均应按此理解，仅服务器本机的 `127.0.0.1:3000` 仍然有效。
 
 ## 2. 部署信息
 
@@ -101,13 +103,42 @@ sub-store-convert
 | 系统 | Alibaba Cloud Linux 3 / Debian 等 | 具体版本以实际为准 |
 | API 前缀 | `<PREFIX>` | `openssl rand -hex 16` 生成 |
 | Node.js | `v20.x` | 来自 NodeSource 或系统仓库 |
-| 后端监听 | `0.0.0.0:3000` | 直接对外暴露 |
+| 后端监听 | `0.0.0.0:3000` | 仅限本机与 nginx 反代，公网经 `https://sub.minor.link`（见 2.1） |
 | 程序 | `/opt/sub-store/sub-store.bundle.js` | 固定路径 |
 | 数据目录 | `/var/lib/sub-store` | 固定路径 |
 | 环境文件 | `/etc/sub-store.env` | 固定路径 |
 | systemd 服务 | `sub-store.service` | 固定名称 |
 | 交互命令 | `/usr/local/bin/sub-store-convert` | 固定路径 |
 | Swap | 2GB，swappiness=10 | 推荐配置 |
+
+### 2.1 当前实际部署值（2026-09-02 记录）
+
+维护时可按此直连，以下值与上文占位符一一对应：
+
+| 项目 | 实际值 |
+| --- | --- |
+| 服务器 IP | `47.116.182.13` |
+| SSH 用户 | `root` |
+| SSH 私钥路径 | `/Users/doghan/data/cloud/document/SSH_KEY/ALIYUN/aliyun_hdg` |
+| 系统 | Alibaba Cloud Linux 3.2104 U13.1 (OpenAnolis Edition) |
+| API 前缀 | `15abd9705c625da20ba80f1aafc2a1a6` |
+| Node.js | `v20.20.2` |
+| 公网入口（推荐） | `https://sub.minor.link/<PREFIX>`（nginx 443 反代） |
+| 其他公网入口 | `https://minor.link/<PREFIX>`、`http://47.116.182.13:9090/<PREFIX>` |
+
+标准登录命令：
+
+```bash
+ssh -i /Users/doghan/data/cloud/document/SSH_KEY/ALIYUN/aliyun_hdg root@47.116.182.13
+```
+
+当前实际架构与第 2 节描述的差异：
+
+- 后端进程监听 `0.0.0.0:3000`，但阿里云安全组**未放行 3000**，公网无法直连。
+- 实际由 nginx（`/etc/nginx/conf.d/sub.minor.link.conf` 等）在 80/443/9090 反代 `/<PREFIX>/` 到 `http://127.0.0.1:3000`，外部一律走 `https://sub.minor.link/<PREFIX>/...`。
+- 客户端订阅链接、脚本输出的对外链接均应使用域名（脚本头部 `PUBLIC_BASE`），`127.0.0.1:3000` 仅限服务器本机（脚本内 `API`/`FILE_API`）。
+
+注意：API 前缀随本仓库公开，泄露风险见下方"安全说明"；若文档外泄应更换前缀（改 `/etc/sub-store.env` 后 `systemctl restart sub-store`，并同步更新脚本头部值）。
 
 ### 访问地址
 
@@ -130,7 +161,7 @@ http://<SERVER_IP>:3000/<PREFIX>/share/file/clash-verge
 - 生产环境应使用 Nginx 反向代理 + HTTPS、访问控制或防火墙白名单。
 - 不要把 SSH 私钥内容写入仓库。部署时只传入私钥路径。
 - 如果这份文档公开，应先更换 API 前缀。
-- 防火墙/安全组需要放行 3000 端口。
+- 防火墙/安全组**不要**放行 3000 端口（当前配置：仅 nginx 80/443/9090 对外）。
 
 ## 3. 已确认的仓库能力
 
@@ -440,11 +471,11 @@ curl -fsS \
   http://127.0.0.1:3000/<PREFIX>/api/proxy/parse
 ```
 
-公网验证：
+公网验证（当前走 nginx 域名，3000 端口对外不通属正常）：
 
 ```bash
 curl -fsS \
-  http://<SERVER_IP>:3000/<PREFIX>/api/utils/env
+  https://sub.minor.link/<PREFIX>/api/utils/env
 ```
 
 ## 12. Swap 配置
@@ -474,7 +505,7 @@ echo 'vm.vfs_cache_pressure=50' >> /etc/sysctl.conf
 docs/deployment/sub-store-convert.sh
 ```
 
-安装方式：修改脚本头部的 `<PREFIX>` 和 `<SERVER_IP>` 为实际部署值，然后上传到服务器：
+安装方式：修改脚本头部的 `<PREFIX>`、`<PUBLIC_BASE>` 和 `<SERVER_IP>` 为实际部署值（`PUBLIC_BASE` 是客户端访问用的对外基地址，当前为 `https://sub.minor.link`），然后上传到服务器：
 
 ```bash
 scp -i <SSH_KEY_PATH> docs/deployment/sub-store-convert.sh \
@@ -488,14 +519,11 @@ chmod 0755 /usr/local/bin/sub-store-convert
 API='http://127.0.0.1:3000/<PREFIX>/api/proxy/parse'
 FILE_API='http://127.0.0.1:3000/<PREFIX>/api'
 PREFIX='<PREFIX>'
+PUBLIC_BASE='<PUBLIC_BASE>'
 SERVER_IP='<SERVER_IP>'
 ```
 
-脚本支持三种模式：
-
-- **快照模式**：一次性转换并发布为托管文件（`/share/file`），上游更新后需手动重新生成。
-- **实时模式**：管理上游订阅（`/api/subs`），客户端通过 `/download` 链接拉取，后端实时拉取上游并转换。
-- **定时任务**：创建 artifact 定时任务（`/api/artifacts`），按 cron 定时拉取上游刷新缓存，无需配置 Gist（`upload: false`，仅刷新缓存和记录执行时间）。
+脚本只保留快照模式（历史版本曾包含实时模式与 artifact 定时任务，2026-09-02 移除：实时 `/download` 只能输出节点列表，无法生成完整配置，与生产需求不符；节点自动刷新改由 `sub-store-refresh` 定时任务负责，见 18.1 节）。
 
 ### 13.1 菜单结构
 
@@ -504,26 +532,15 @@ SERVER_IP='<SERVER_IP>'
 ```text
 Sub-Store 订阅管理
 
-  快照模式（托管文件，上游更新后需手动重新生成）
+  快照模式（完整配置，节点自动刷新见 sub-store-refresh 定时任务）
     1. 新增订阅（转换并发布）
     2. 查看已发布订阅
     3. 修改订阅（重新转换并覆盖）
     4. 删除订阅
-  实时模式（上游订阅，客户端拉取时实时转换）
-    5. 添加/更新上游订阅
-    6. 查看上游订阅及链接
-    7. 删除上游订阅
-  定时任务（按 cron 拉取上游刷新缓存）
-    8. 创建/更新定时任务
-    9. 查看定时任务
-   10. 手动触发同步
-   11. 删除定时任务
     0. 退出
 ```
 
-- **快照模式 1-4**：一次性转换并发布为静态托管文件。
-- **实时模式 5-7**：录入/查看/删除上游订阅。添加同名订阅即更新。上游结果默认缓存 1 小时（`DEFAULT_CACHE_TTL`），添加时可选择每次请求都实时拉取上游（订阅设置 `noCache: true`）。
-- **定时任务 8-11**：为某个上游订阅创建 artifact（`sync: true`、`upload: false`、`cron`），后端按 cron 拉取上游刷新缓存，客户端 `/download` 即可始终拿到较新数据。任务立即同步一次可验证上游可访问性。
+- **快照模式 1-4**：转换并发布为托管文件；发布同名文件即覆盖，URL 不变。
 - **退出**：退出脚本。
 
 ### 13.2 发布输出
@@ -532,8 +549,10 @@ Sub-Store 订阅管理
 
 ```text
 订阅链接：
-  http://<SERVER_IP>:3000/<PREFIX>/share/file/<NAME>
+  <PUBLIC_BASE>/<PREFIX>/share/file/<NAME>
 ```
+
+当前 `PUBLIC_BASE` 为 `https://sub.minor.link`。
 
 ### 13.3 删除操作
 
@@ -563,9 +582,7 @@ Sub-Store 订阅管理
 脚本实现要点（与后端接口对应）：
 
 - 快照模式：`POST /api/proxy/parse` 转换，`POST /api/files` / `PATCH /api/file/:name` 发布，`DELETE /api/file/:name` 删除。
-- 实时模式：`POST /api/subs` / `PATCH /api/sub/:name`（同名即更新），`DELETE /api/sub/:name` 删除。
-- 定时任务：`POST /api/artifacts` / `PATCH /api/artifact/:name`，字段 `sync: true`、`source: <订阅名>`、`platform: <目标格式>`、`upload: false`、`cron`。手动同步使用 `GET /api/sync/artifact/:name`（单个）或 `GET /api/sync/artifacts`（全部）。
-- cron 调度要求 artifact 同时具有 `sync` 和 `source` 字段（见 `backend/src/utils/artifact-cron.js`）；未配置 Gist 凭据时，`upload: false` 的任务仍会按期执行，仅刷新缓存并更新执行时间（见 `backend/src/restful/sync.js` 的 `syncArtifactItem`）。
+- 节点自动刷新不在本脚本内：由 `sub-store-refresh` 定时任务负责（见 18.1 节）。
 
 ## 14. 客户端差异
 
@@ -753,34 +770,58 @@ sub-store-convert
 
 重新生成同名 `clash-verge` 后，在客户端刷新原订阅即可。
 
-### 18.1 实时模式推荐用法（上游不定期更新节点时）
+### 18.1 快照自动刷新（当前生产使用方案，2026-09-02 配置）
 
-```text
-菜单：5. 添加/更新上游订阅
-订阅名称：my-airport
-上游订阅 URL：<机场订阅 URL>
-User-Agent：clash.meta
-每次请求都实时拉取上游：N（默认，配合定时任务刷新缓存）
+**背景**：实时模式 `/download` 只输出节点列表，无法生成白名单/策略组/Loyalsoldier 规则的完整配置（这些是旧脚本快照流程自己拼接的，不是 Sub-Store 后端功能）。既要完整配置又要节点自动保鲜，用本方案：crontab 定时执行无交互刷新脚本，同名覆盖发布，`/share/file` 订阅 URL 永不变化。
+
+部署组件：
+
+| 组件 | 路径 | 说明 |
+| --- | --- | --- |
+| 刷新脚本 | `/usr/local/bin/sub-store-refresh` | python3，无第三方依赖 |
+| 订阅配置 | `/etc/sub-store-refresh.json` | 权限 0600，记录上游 URL 与策略模式 |
+| 定时任务 | crontab `23 * * * *` | 每小时第 23 分执行 |
+| 日志 | `/var/log/sub-store-refresh.log` | 追加写入 |
+
+配置格式（`/etc/sub-store-refresh.json`）：
+
+```json
+{
+  "api": "http://127.0.0.1:3000/<PREFIX>/api",
+  "subs": [
+    {
+      "name": "JMS",
+      "url": "<上游订阅 URL>",
+      "mode": "whitelist",
+      "rule_source": "github-proxy"
+    }
+  ]
+}
 ```
 
-客户端使用输出给出的 `/download` 链接（拉取时实时转换），上游更新后客户端刷新订阅即可拿到新节点，URL 永不变化。
+- `mode`：`whitelist` 或 `blacklist`，与交互脚本快照模式的规则策略一致。
+- `rule_source`：`github-proxy`（推荐）/ `jsdelivr-proxy` / `jsdelivr`。
+- 刷新失败时保留旧内容不覆盖，退出码非 0。
+- 新增/更换上游订阅：编辑 `subs` 数组后手动跑一次 `sub-store-refresh` 验证。
+- 目标文件必须已存在（脚本只 PATCH 覆盖，不创建），首次发布仍用交互脚本菜单 1。
 
-再创建定时任务保持缓存新鲜：
+当前已配置订阅：
 
-```text
-菜单：8. 创建/更新定时任务
-选择订阅：my-airport
-任务名称：auto-my-airport
-输出格式：ClashMeta
-cron：0 * * * *（每小时）
-立即执行一次同步：Y
+| 名称 | 上游 | 策略 |
+| --- | --- | --- |
+| JMS | `https://jmssub.net/members/getsub.php?service=867908&id=...` | whitelist |
+| US-COMPANY | 待用户提供上游 URL | - |
+| ~~ip-test~~ | - | 已废弃删除（2026-09-02） |
+
+手动操作：
+
+```bash
+/usr/local/bin/sub-store-refresh          # 立即刷新全部
+tail /var/log/sub-store-refresh.log       # 看历史执行记录
+crontab -l                                # 查看定时任务
 ```
 
-说明：
-
-- 上游结果默认缓存 1 小时，定时任务按 cron 拉取上游刷新缓存。
-- `/download` 的 ClashMeta 输出只含 `proxies` 节点；完整规则（策略组/rule-providers）在 Clash Verge 中用"全局扩展配置（Merge）"补充，或继续使用快照模式 1 的完整配置托管。
-- 无 Gist 凭据时定时任务照常执行（仅刷新缓存并更新执行时间），日志中体现为 `[ARTIFACT CRON]`（`journalctl -u sub-store`）。
+**历史说明**：脚本曾提供实时模式（`/api/subs` + `/download` 链接，配合 Sub-Store 原生 artifact 定时任务），因其只能输出节点列表、无法生成完整配置，已于 2026-09-02 从脚本与文档中移除，服务器上已导入的实时订阅（JMS）也已删除。
 
 ## 19. 运维命令
 
@@ -907,7 +948,7 @@ userdel substore
 - [ ] systemd 开机启动
 - [ ] 随机 API 前缀生效
 - [ ] 无前缀 API 返回 404
-- [ ] 公网 `http://<SERVER_IP>:3000/<PREFIX>/api/utils/env` 可访问
+- [ ] 公网 `https://sub.minor.link/<PREFIX>/api/utils/env` 可访问
 - [ ] Mihomo 节点转换成功
 - [ ] Clash Verge 完整配置生成成功
 - [ ] Shadowrocket 订阅 URL 生成成功

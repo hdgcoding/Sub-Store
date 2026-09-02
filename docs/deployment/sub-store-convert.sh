@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Sub-Store 交互式订阅管理脚本（快照模式 + 实时模式 + 定时任务）
-# 部署前必须把下方 <PREFIX> / <SERVER_IP> 替换为实际部署值
+# Sub-Store 交互式订阅管理脚本（快照模式，节点自动刷新由 sub-store-refresh 定时任务负责）
+# 部署前必须把下方 <PREFIX> / <PUBLIC_BASE> / <SERVER_IP> 替换为实际部署值
 set -euo pipefail
 
 API='http://127.0.0.1:3000/<PREFIX>/api/proxy/parse'
 FILE_API='http://127.0.0.1:3000/<PREFIX>/api'
 PREFIX='<PREFIX>'
+PUBLIC_BASE='<PUBLIC_BASE>'
 SERVER_IP='<SERVER_IP>'
 
 command -v curl >/dev/null || { echo '缺少 curl。' >&2; exit 1; }
@@ -73,7 +74,7 @@ for f in data:
     while IFS= read -r name; do
         [[ -n $name ]] || continue
         echo "  [$name]"
-        echo "    http://$SERVER_IP:3000/$PREFIX/share/file/$name"
+        echo "    $PUBLIC_BASE/$PREFIX/share/file/$name"
         echo
     done <<< "$names"
 }
@@ -289,7 +290,7 @@ RULES
         OUTPUT=${OUTPUT:-$DEFAULT_OUTPUT}
     fi
 
-    export API FILE_API PREFIX SERVER_IP SOURCE TARGET OUTPUT PUBLISH_NAME
+    export API FILE_API PREFIX PUBLIC_BASE SERVER_IP SOURCE TARGET OUTPUT PUBLISH_NAME
     export POLICY_MODE RULE_SOURCE CUSTOM_RULES CUSTOM_POLICIES FALLBACK
 
     python3 - <<'PY'
@@ -304,7 +305,7 @@ import urllib.request
 api = os.environ["API"]
 file_api = os.environ["FILE_API"]
 prefix = os.environ["PREFIX"]
-server_ip = os.environ["SERVER_IP"]
+public_base = os.environ["PUBLIC_BASE"].rstrip("/")
 source = os.environ["SOURCE"]
 target = os.environ["TARGET"]
 output = os.environ.get("OUTPUT", "")
@@ -406,7 +407,7 @@ def publish(content):
     share_path = f"/{prefix}/share/file/{encoded_name}"
     print()
     print("订阅链接：")
-    print(f"  http://{server_ip}:3000{share_path}")
+    print(f"  {public_base}{share_path}")
 
 
 def yaml_string(value):
@@ -575,387 +576,6 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# 实时模式（上游订阅，客户端通过 /download 实时拉取）
-# ---------------------------------------------------------------------------
-
-list_sub_names() {
-    curl -fsS "$FILE_API/subs" | python3 -c "
-import json, sys
-data = json.load(sys.stdin).get('data') or []
-if not data:
-    print('')
-    sys.exit(0)
-for s in data:
-    print(s.get('name', ''))
-" 2>/dev/null
-}
-
-pick_sub() {
-    local names total
-    names=$(list_sub_names)
-    if [[ -z $names ]]; then
-        echo '没有上游订阅，请先添加。' >&2
-        return 1
-    fi
-    echo
-    echo '上游订阅：'
-    echo
-    local i=1
-    while IFS= read -r name; do
-        echo "  $i. $name"
-        ((i++))
-    done <<< "$names"
-    echo
-    total=$(echo "$names" | wc -l | tr -d ' ')
-    choose '请选择' 1 "$total"
-    SUB_NAME=$(echo "$names" | sed -n "${REPLY}p")
-}
-
-do_sub_add() {
-    echo '添加/更新上游订阅'
-    echo
-    read -r -p '订阅名称 [my-airport]: ' SUB_NAME
-    SUB_NAME=${SUB_NAME:-my-airport}
-    [[ $SUB_NAME =~ ^[A-Za-z0-9._-]+$ ]] || {
-        echo '订阅名称只能包含字母、数字、点、下划线和短横线。' >&2
-        return 1
-    }
-    read -r -p '上游订阅 URL: ' SUB_URL
-    [[ -n $SUB_URL ]] || { echo '输入不能为空。' >&2; return 1; }
-    read -r -p '请求 User-Agent [clash.meta]: ' SUB_UA
-    SUB_UA=${SUB_UA:-clash.meta}
-    echo '说明: 默认上游结果缓存 1 小时；选 y 则客户端每次拉取都实时请求上游。'
-    read -r -p '每次请求都实时拉取上游? (y/N): ' NC
-    SUB_NOCACHE=$([[ $NC == [yY] ]] && echo 1 || echo 0)
-
-    local status payload result
-    status=$(curl -sS -o /dev/null -w '%{http_code}' "$FILE_API/sub/$SUB_NAME")
-
-    export SUB_NAME SUB_URL SUB_UA SUB_NOCACHE
-    payload=$(mktemp)
-    python3 - >"$payload" <<'PY'
-import json, os
-payload = {
-    "name": os.environ["SUB_NAME"],
-    "displayName": os.environ["SUB_NAME"],
-    "source": "remote",
-    "url": os.environ["SUB_URL"],
-    "ua": os.environ["SUB_UA"],
-    "process": [],
-}
-if os.environ["SUB_NOCACHE"] == "1":
-    payload["noCache"] = True
-print(json.dumps(payload, ensure_ascii=False))
-PY
-
-    if [[ $status == 2* ]]; then
-        result=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
-            -H 'Content-Type: application/json' \
-            --data @"$payload" "$FILE_API/sub/$SUB_NAME")
-    else
-        result=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
-            -H 'Content-Type: application/json' \
-            --data @"$payload" "$FILE_API/subs")
-    fi
-    rm -f "$payload"
-
-    echo
-    if [[ $result == 2* ]]; then
-        echo "已保存订阅: $SUB_NAME"
-        echo
-        echo '订阅链接（客户端使用，拉取时实时转换）:'
-        echo "  ClashMeta    http://$SERVER_IP:3000/$PREFIX/download/$SUB_NAME?target=ClashMeta"
-        echo "  Shadowrocket http://$SERVER_IP:3000/$PREFIX/download/$SUB_NAME?target=Shadowrocket"
-    else
-        echo "保存失败 (HTTP $result)" >&2
-        return 1
-    fi
-}
-
-do_sub_list() {
-    local data
-    data=$(curl -fsS "$FILE_API/subs") || {
-        echo '请求失败。' >&2
-        return 1
-    }
-    [[ $data == '{"status":"success","data":[]}' || $data == '{"status":"success"}' ]] && {
-        echo '没有上游订阅。'
-        return
-    }
-    export SUBS_DATA="$data" PREFIX SERVER_IP
-    python3 <<'PY'
-import json, os
-
-data = json.loads(os.environ["SUBS_DATA"]).get("data") or []
-print()
-print("上游订阅：")
-for s in data:
-    name = s.get("name", "")
-    url = s.get("url", "")
-    ua = s.get("ua", "-")
-    nocache = "是" if s.get("noCache") else "否(缓存1小时)"
-    print()
-    print(f"  [{name}]")
-    print(f"    上游: {url}")
-    print(f"    UA: {ua}    实时拉取: {nocache}")
-    print(f"    ClashMeta    http://{os.environ['SERVER_IP']}:3000/{os.environ['PREFIX']}/download/{name}?target=ClashMeta")
-    print(f"    Shadowrocket http://{os.environ['SERVER_IP']}:3000/{os.environ['PREFIX']}/download/{name}?target=Shadowrocket")
-print()
-PY
-}
-
-do_sub_delete() {
-    local names total encoded result
-    names=$(list_sub_names)
-    if [[ -z $names ]]; then
-        echo '没有上游订阅。'
-        return
-    fi
-    echo
-    echo '上游订阅：'
-    echo
-    local i=1
-    while IFS= read -r name; do
-        echo "  $i. $name"
-        ((i++))
-    done <<< "$names"
-    echo
-    echo "  0. 取消"
-    echo
-    total=$(echo "$names" | wc -l | tr -d ' ')
-    pick_index '请选择要删除的序号' 0 "$total"
-    [[ $REPLY == 0 ]] && { echo '已取消。'; return; }
-
-    DEL_NAME=$(echo "$names" | sed -n "${REPLY}p")
-    echo "确认删除: $DEL_NAME (y/N)"
-    read -r CONFIRM
-    [[ $CONFIRM == [yY] ]] || { echo '已取消。'; return; }
-
-    encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$DEL_NAME', safe=''))")
-    result=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$FILE_API/sub/$encoded")
-    if [[ $result == 2* ]]; then
-        echo "已删除: ${DEL_NAME}（引用它的定时任务需自行删除）"
-    else
-        echo "删除失败 (HTTP $result)"
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# 定时任务（artifact + cron，定时拉取上游刷新缓存）
-# ---------------------------------------------------------------------------
-
-do_art_add() {
-    pick_sub || return 1
-    local SRC=$SUB_NAME
-
-    echo
-    read -r -p "任务名称 [auto-$SRC]: " ART_NAME
-    ART_NAME=${ART_NAME:-auto-$SRC}
-    [[ $ART_NAME =~ ^[A-Za-z0-9._-]+$ ]] || {
-        echo '任务名称只能包含字母、数字、点、下划线和短横线。' >&2
-        return 1
-    }
-
-    echo
-    echo '输出格式:'
-    local -a TARGETS=(ClashMeta Shadowrocket Surge Loon QX Stash sing-box V2Ray JSON)
-    local i
-    for i in "${!TARGETS[@]}"; do
-        printf '  %d. %s\n' "$((i + 1))" "${TARGETS[$i]}"
-    done
-    choose '请选择' 1 "${#TARGETS[@]}"
-    local PLATFORM=${TARGETS[$((REPLY - 1))]}
-
-    echo
-    echo '说明: 上游结果默认缓存 1 小时，定时任务按 cron 拉取上游刷新缓存，'
-    echo '      客户端 /download 即可始终拿到较新数据。'
-    read -r -p '执行周期 cron [0 * * * * 每小时]: ' ART_CRON
-    ART_CRON=${ART_CRON:-0 * * * *}
-
-    local status payload result
-    status=$(curl -sS -o /dev/null -w '%{http_code}' "$FILE_API/artifact/$ART_NAME")
-
-    export ART_NAME ART_CRON PLATFORM SRC
-    payload=$(mktemp)
-    python3 - >"$payload" <<'PY'
-import json, os
-payload = {
-    "name": os.environ["ART_NAME"],
-    "displayName": os.environ["ART_NAME"],
-    "type": "subscription",
-    "source": os.environ["SRC"],
-    "platform": os.environ["PLATFORM"],
-    "sync": True,
-    "upload": False,
-    "cron": os.environ["ART_CRON"],
-}
-print(json.dumps(payload, ensure_ascii=False))
-PY
-
-    if [[ $status == 2* ]]; then
-        result=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
-            -H 'Content-Type: application/json' \
-            --data @"$payload" "$FILE_API/artifact/$ART_NAME")
-    else
-        result=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
-            -H 'Content-Type: application/json' \
-            --data @"$payload" "$FILE_API/artifacts")
-    fi
-    rm -f "$payload"
-
-    echo
-    if [[ $result != 2* ]]; then
-        echo "保存失败 (HTTP $result)" >&2
-        return 1
-    fi
-    echo "已保存定时任务: ${ART_NAME}（${SRC} -> ${PLATFORM}, cron: ${ART_CRON}）"
-
-    read -r -p '立即执行一次同步? (Y/n): ' NOW
-    if [[ $NOW != [nN] ]]; then
-        if curl -fsS "$FILE_API/sync/artifact/$ART_NAME" >/dev/null; then
-            echo '同步完成。'
-        else
-            echo '同步失败，请检查上游 URL 是否可访问。' >&2
-            return 1
-        fi
-    fi
-}
-
-do_art_list() {
-    local data
-    data=$(curl -fsS "$FILE_API/artifacts") || {
-        echo '请求失败。' >&2
-        return 1
-    }
-    export ARTS_DATA="$data"
-    python3 <<'PY'
-import json, os, time
-
-data = json.loads(os.environ["ARTS_DATA"]).get("data") or []
-arts = [a for a in data if a.get("source")]
-if not arts:
-    print("没有定时任务。")
-else:
-    print()
-    print("定时任务：")
-    for a in arts:
-        ts = a.get("updated")
-        when = (
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts / 1000))
-            if ts
-            else "-"
-        )
-        print()
-        print(f"  [{a.get('name', '')}]")
-        print(f"    来源: {a.get('source', '')}    格式: {a.get('platform', '-')}")
-        print(f"    cron: {a.get('cron', '-')}")
-        print(f"    上传: {'开启' if a.get('upload', True) else '关闭(仅刷新缓存)'}    上次执行: {when}")
-    print()
-PY
-}
-
-do_art_sync() {
-    local data names total encoded resp
-    data=$(curl -fsS "$FILE_API/artifacts") || {
-        echo '请求失败。' >&2
-        return 1
-    }
-    export ARTS_DATA="$data"
-    names=$(python3 -c "
-import json, os
-data = json.loads(os.environ['ARTS_DATA']).get('data') or []
-for a in data:
-    if a.get('source'):
-        print(a.get('name', ''))
-")
-    if [[ -z $names ]]; then
-        echo '没有定时任务。'
-        return
-    fi
-    echo
-    echo '定时任务：'
-    echo
-    local i=1
-    while IFS= read -r name; do
-        echo "  $i. $name"
-        ((i++))
-    done <<< "$names"
-    echo
-    echo "  0. 全部同步"
-    echo
-    total=$(echo "$names" | wc -l | tr -d ' ')
-    pick_index '请选择' 0 "$total"
-
-    if [[ $REPLY == 0 ]]; then
-        resp=$(curl -sS "$FILE_API/sync/artifacts") || {
-            echo '请求失败。' >&2
-            return 1
-        }
-    else
-        NAME=$(echo "$names" | sed -n "${REPLY}p")
-        encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$NAME', safe=''))")
-        resp=$(curl -sS "$FILE_API/sync/artifact/$encoded") || {
-            echo "同步失败: ${NAME}（可能上游不可访问，详见日志 journalctl -u sub-store）" >&2
-            return 1
-        }
-        NAME=
-    fi
-    export RESP="$resp"
-    python3 -c "
-import json, os
-d = json.loads(os.environ['RESP'])
-print('同步结果:', d.get('status', d))
-"
-}
-
-do_art_delete() {
-    local data names total encoded result
-    data=$(curl -fsS "$FILE_API/artifacts") || {
-        echo '请求失败。' >&2
-        return 1
-    }
-    export ARTS_DATA="$data"
-    names=$(python3 -c "
-import json, os
-data = json.loads(os.environ['ARTS_DATA']).get('data') or []
-for a in data:
-    if a.get('source'):
-        print(a.get('name', ''))
-")
-    if [[ -z $names ]]; then
-        echo '没有定时任务。'
-        return
-    fi
-    echo
-    echo '定时任务：'
-    echo
-    local i=1
-    while IFS= read -r name; do
-        echo "  $i. $name"
-        ((i++))
-    done <<< "$names"
-    echo
-    echo "  0. 取消"
-    echo
-    total=$(echo "$names" | wc -l | tr -d ' ')
-    pick_index '请选择要删除的序号' 0 "$total"
-    [[ $REPLY == 0 ]] && { echo '已取消。'; return; }
-
-    DEL_NAME=$(echo "$names" | sed -n "${REPLY}p")
-    echo "确认删除: $DEL_NAME (y/N)"
-    read -r CONFIRM
-    [[ $CONFIRM == [yY] ]] || { echo '已取消。'; return; }
-
-    encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$DEL_NAME', safe=''))")
-    result=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$FILE_API/artifact/$encoded")
-    if [[ $result == 2* ]]; then
-        echo "已删除: $DEL_NAME"
-    else
-        echo "删除失败 (HTTP $result)"
-    fi
-}
-
-# ---------------------------------------------------------------------------
 # 主菜单
 # ---------------------------------------------------------------------------
 
@@ -963,23 +583,14 @@ check_service || exit 1
 
 echo 'Sub-Store 订阅管理'
 echo
-echo '  快照模式（托管文件，上游更新后需手动重新生成）'
+echo '  快照模式（完整配置，节点自动刷新见 sub-store-refresh 定时任务）'
 echo '    1. 新增订阅（转换并发布）'
 echo '    2. 查看已发布订阅'
 echo '    3. 修改订阅（重新转换并覆盖）'
 echo '    4. 删除订阅'
-echo '  实时模式（上游订阅，客户端拉取时实时转换）'
-echo '    5. 添加/更新上游订阅'
-echo '    6. 查看上游订阅及链接'
-echo '    7. 删除上游订阅'
-echo '  定时任务（按 cron 拉取上游刷新缓存）'
-echo '    8. 创建/更新定时任务'
-echo '    9. 查看定时任务'
-echo '   10. 手动触发同步'
-echo '   11. 删除定时任务'
 echo '    0. 退出'
 echo
-pick_index '请选择' 0 11
+pick_index '请选择' 0 4
 ACTION=$REPLY
 
 case $ACTION in
@@ -987,13 +598,6 @@ case $ACTION in
     2) do_list ;;
     3) do_convert ;;
     4) do_delete ;;
-    5) do_sub_add ;;
-    6) do_sub_list ;;
-    7) do_sub_delete ;;
-    8) do_art_add ;;
-    9) do_art_list ;;
-    10) do_art_sync ;;
-    11) do_art_delete ;;
     0) exit 0 ;;
     *) echo '无效选择。' >&2 ;;
 esac
