@@ -13,6 +13,7 @@
 | 服务器 | 阿里云 `47.116.182.13`（Alibaba Cloud Linux 3，Node v20.20.2），SSH 信息见 2.1 |
 | 后端 | systemd 服务 `sub-store`，监听 `0.0.0.0:3000`，数据目录 `/var/lib/sub-store` |
 | 对外入口 | nginx 443 反代 → `https://sub.minor.link/<PREFIX>/...`（3000 端口未对公网放行，**这是刻意配置**） |
+| TLS 证书 | Let's Encrypt，`minor.link` + `sub.minor.link` 两张，crontab 每月 1 号自动续期（前置条件见 2.2，踩坑记录见 17.8） |
 | 使用模式 | 仅快照模式：`/share/file/<NAME>` 输出完整白名单 Mihomo 配置 |
 | 节点保鲜 | crontab `23 * * * *` 运行 `/usr/local/bin/sub-store-refresh`（配置 `/etc/sub-store-refresh.json`），同名覆盖发布，订阅 URL 永不变化 |
 | 交互脚本 | `/usr/local/bin/sub-store-convert`（快照模式菜单 1-4），源码在仓库 `docs/deployment/sub-store-convert.sh` |
@@ -182,6 +183,38 @@ http://127.0.0.1:3000/<PREFIX>
 - 不要把 SSH 私钥内容写入仓库。部署时只传入私钥路径。
 - 如果这份文档公开，应先更换 API 前缀（步骤见 2.1 注意事项）。
 - 防火墙/安全组**不要**放行 3000 端口（当前配置：仅 nginx 80/443/9090 对外）。
+
+### 2.2 TLS 证书与自动续期（前置条件）
+
+对外 HTTPS 依赖两张 Let's Encrypt 证书（90 天有效期，certbot 自动续期）：
+
+| 证书 | 覆盖域名 | 用途 |
+| --- | --- | --- |
+| `sub.minor.link` | `sub.minor.link` | 订阅入口（客户端拉订阅走这里，证书过期会导致客户端报 TLS 验证失败、无法更新订阅） |
+| `minor.link` | `minor.link`、`www.minor.link` | 主站 |
+
+自动续期机制（crontab，root 用户）：
+
+```cron
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 3 1 * * certbot renew --quiet --deploy-hook "systemctl reload nginx" >> /var/log/certbot-renew.log 2>&1
+```
+
+**续期正常工作的前置条件（缺一即失效）：**
+
+1. **crontab 第一行必须有 `PATH=` 声明**。cron 环境的精简 PATH 会导致 certbot 的 nginx 插件报 `NoInstallationError: Could not find a usable 'nginx' binary` 而全部续期失败（真实事故见 17.8）。
+2. **80 端口必须对公网放行**。Let's Encrypt HTTP-01 验证走 80 端口，安全组封 80 会导致续期失败（443/9090 反代不受影响）。
+3. **nginx 必须处于运行状态**。续期后 deploy-hook 会 `systemctl reload nginx`，nginx 未运行时 reload 失败。
+4. **续期日志**写入 `/var/log/certbot-renew.log`，排查续期问题先看这里，再看 `/var/log/letsencrypt/letsencrypt.log`。
+
+检查与手动操作：
+
+```bash
+certbot certificates                 # 查看两张证书的到期时间
+certbot renew --dry-run              # 演练续期（走测试环境，不真签），验证整条链路
+certbot renew --cert-name sub.minor.link   # 手动续期单张证书，成功后自动 reload nginx
+echo | openssl s_client -connect sub.minor.link:443 -servername sub.minor.link 2>/dev/null | openssl x509 -noout -dates
+```
 
 ## 3. 已确认的仓库能力
 
@@ -762,6 +795,30 @@ DELETE /api/file/:name
 
 通过 SSH heredoc 写入脚本时，特殊字符（`$`、反引号、反斜杠等）会被本地 shell 解析，导致脚本损坏。推荐做法：先在本地写好文件，再 `scp` 上传到服务器。
 
+### 17.8 证书自动续期静默失败导致客户端无法更新订阅（2026-09-06 处理）
+
+**现象**：客户端（Surge）拉取 JMS / US-COMPANY 订阅报错：
+
+```text
+failed to fetch remote profile: platform TLS verifier failed: Request failed; static webpki roots fallback failed: Request failed
+```
+
+**根因链**：
+
+1. `sub.minor.link` / `minor.link` 两张证书 9 月 4 日过期。
+2. certbot crontab（每月 1 号）在 9 月 1 日实际执行了，但**静默失败**——`--quiet` 且无日志重定向，没有任何告警。
+3. 失败原因：cron 精简环境下 certbot 的 nginx 插件报 `NoInstallationError: Could not find a usable 'nginx' binary`（`/var/log/letsencrypt/letsencrypt.log.2` 可查证）。
+4. 6 月 6 日签发的 90 天证书，7 月、8 月 1 日因"距到期超 30 天"被 certbot 正常跳过，9 月 1 日第一次真正需要续期时就撞上了插件问题，三天后过期。
+
+**修复**（2026-09-06）：
+
+- crontab 首行增加 `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`。
+- certbot 行加 `>> /var/log/certbot-renew.log 2>&1`，失败不再静默。
+- 手动续期两张证书，`certbot renew --dry-run` 全部通过。
+- 顺带把 sub-store-refresh 行之外的 crontab 结构固化，详见 2.2 节。
+
+**教训**：`--quiet` 的 cron 任务必须重定向日志；涉及证书/域名解析的对外服务，验收清单里必须有"证书有效期"检查项（22 节已加）。
+
 ## 18. 日常使用
 
 登录服务器：
@@ -986,6 +1043,8 @@ userdel substore
 - [ ] 删除操作使用序号选择 + 二次确认
 - [ ] crontab 存在 `23 * * * * sub-store-refresh` 定时任务
 - [ ] `sub-store-refresh` 手动执行成功，`/share/file/JMS` 返回 200 且内容更新
+- [ ] crontab 首行有 `PATH=` 声明，certbot 行有日志重定向（见 2.2）
+- [ ] `certbot renew --dry-run` 全部证书通过，`certbot certificates` 无过期
 - [ ] `/usr/local/bin/sub-store-convert` 与仓库脚本一致（占位符替换后 diff 为空）
 - [ ] Swap 2GB 配置完成
 - [ ] 在线规则通过 `PROXY` 下载
