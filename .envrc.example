@@ -1,0 +1,21 @@
+# Copy to .envrc, fill in local values, chmod 600 .envrc, then direnv allow.
+# Never put actual credentials in this example or commit .envrc.
+export SUB_STORE_SSH_HOST=''
+export SUB_STORE_SSH_PORT='22'
+export SUB_STORE_SSH_USER='root'
+export SUB_STORE_SSH_KEY=''
+export SUB_STORE_API_PREFIX=''
+# Loopback is for commands executed on the deployment server.
+# For local conversion, set this to the public origin or an SSH tunnel origin.
+export SUB_STORE_API_BASE='http://127.0.0.1:3000'
+export SUB_STORE_TLS_DOMAIN=''
+export SUB_STORE_SITE_DOMAIN=''
+export SUB_STORE_PUBLIC_BASE="https://${SUB_STORE_TLS_DOMAIN}"
+# Optional: only fill in when managing the upstream subscription locally.
+export SUB_STORE_JMS_URL=''
+
+# Optional: VPN server access, independent of the Sub-Store server.
+export VPN_SSH_HOST=''
+export VPN_SSH_PORT='22'
+export VPN_SSH_USER='root'
+export VPN_SSH_KEY=''

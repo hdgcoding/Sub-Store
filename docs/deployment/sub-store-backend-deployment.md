@@ -1,6 +1,6 @@
 # Sub-Store 后端安装与订阅转换部署记录
 
-> 最后核对日期：2026-09-02  
+> 访问配置环境变量化：2026-11-17（其余部署记录保留原核对日期）
 > 用途：供后续维护者或其他 AI 复现、排错和继续改造  
 > 首次部署基于仓库提交：`9ecf9d6aa3f3aa39da7e75aa9e469adb636b1d7d`（Sub-Store 版本 `2.24.7`）
 
@@ -10,10 +10,10 @@
 
 | 项 | 当前状态 |
 | --- | --- |
-| 服务器 | 阿里云 `47.116.182.13`（Alibaba Cloud Linux 3，Node v20.20.2），SSH 信息见 2.1 |
+| 服务器 | 阿里云 `${SUB_STORE_SSH_HOST}`（Alibaba Cloud Linux 3，Node v20.20.2），SSH 信息见 2.1 |
 | 后端 | systemd 服务 `sub-store`，监听 `0.0.0.0:3000`，数据目录 `/var/lib/sub-store` |
-| 对外入口 | nginx 443 反代 → `https://sub.minor.link/<PREFIX>/...`（3000 端口未对公网放行，**这是刻意配置**） |
-| TLS 证书 | Let's Encrypt，`minor.link` + `sub.minor.link` 两张，crontab 每月 1 号自动续期（前置条件见 2.2，踩坑记录见 17.8） |
+| 对外入口 | nginx 443 反代 → `${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/...`（3000 端口未对公网放行，**这是刻意配置**） |
+| TLS 证书 | Let's Encrypt，`${SUB_STORE_SITE_DOMAIN}` + `${SUB_STORE_TLS_DOMAIN}` 两张，crontab 每月 1 号自动续期（前置条件见 2.2，踩坑记录见 17.8） |
 | 使用模式 | 仅快照模式：`/share/file/<NAME>` 输出完整白名单 Mihomo 配置 |
 | 节点保鲜 | crontab `23 * * * *` 运行 `/usr/local/bin/sub-store-refresh`（配置 `/etc/sub-store-refresh.json`），同名覆盖发布，订阅 URL 永不变化 |
 | 交互脚本 | `/usr/local/bin/sub-store-convert`（快照模式菜单 1-4），源码在仓库 `docs/deployment/sub-store-convert.sh` |
@@ -25,9 +25,10 @@
 | 任务 | 章节 |
 | --- | --- |
 | 新增/更换上游订阅并纳入自动刷新 | 18.1 |
+| VPN 换 IP，同步 US-COMPANY 快照并记录 SSH 地址 | 18.2 |
 | 手动立即刷新 / 看刷新日志 | 18.1 手动操作 |
 | 发布一个新订阅（首次） | 13 菜单 1，然后 18.1 纳入刷新 |
-| 更换 API 前缀 | 9（env）+ 13（脚本头部）+ 18.1（刷新配置），改完 `systemctl restart sub-store` |
+| 更换 API 前缀 | 9（后端 env）+ 13（转换脚本环境文件）+ 18.1（刷新配置），同步本机 `.envrc` 和客户端链接后重启 |
 | 升级后端版本 | 20 |
 | 排错 | 19（运维命令）+ 17（历史踩坑） |
 | 从零重装 / 换机 | 4 → 7 → 8 → 9 → 10 → 13 → 18.1 → 22 |
@@ -35,7 +36,7 @@
 注意事项：
 
 - 改完仓库里的 `sub-store-convert.sh` 后**必须重新 scp 到服务器**，服务器上的脚本不会自动更新（见 13 节）。
-- 全文占位符 `<PREFIX>` / `<SERVER_IP>` / `<PUBLIC_BASE>` 的实际值见 2.1。
+- 访问配置均引用环境变量，真实值仅保存在不提交的根目录 `.envrc`，变量说明见 2.1。
 
 ## 0. 参考仓库与文档
 
@@ -105,21 +106,21 @@ Shadowrocket 是闭源客户端，没有可用于核对实现的官方开源仓�
 
 生成的完整配置包含：`proxies`、`proxy-groups`、`rule-providers`、`rules`，使用 [Loyalsoldier/clash-rules](https://github.com/Loyalsoldier/clash-rules) 在线规则，支持白名单/黑名单策略。
 
-对外访问统一走 `https://sub.minor.link/<PREFIX>/share/file/<NAME>`（nginx 反代，详见 2.1）。曾实现的实时 `/download` 模式已评估并放弃，原因与过程见 13 节开头及 18.1 历史说明。
+对外访问统一走 `${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/share/file/<NAME>`（nginx 反代，详见 2.1）。曾实现的实时 `/download` 模式已评估并放弃，原因与过程见 13 节开头及 18.1 历史说明。
 
 ## 2. 部署信息
 
-以下值在每次部署时由用户提供或自动生成：
+以下值在每次部署时由用户提供或自动生成。真实访问配置只放在根目录 `.envrc`，不写入公开文档：
 
-| 项目 | 占位符 | 说明 |
+| 项目 | 环境变量 / 固定值 | 说明 |
 | --- | --- | --- |
-| 服务器 IP | `<SERVER_IP>` | 用户服务器公网 IP |
-| SSH 用户 | `root` | SSH 登录用户 |
-| SSH 密钥 | `<SSH_KEY_PATH>` | 用户本地私钥路径 |
+| 服务器 IP | `${SUB_STORE_SSH_HOST}` | 用户服务器公网 IP |
+| SSH 用户 / 端口 | `${SUB_STORE_SSH_USER}` / `${SUB_STORE_SSH_PORT}` | SSH 登录配置 |
+| SSH 密钥 | `${SUB_STORE_SSH_KEY}` | 用户本地私钥路径，不是私钥内容 |
 | 系统 | Alibaba Cloud Linux 3 / Debian 等 | 具体版本以实际为准 |
-| API 前缀 | `<PREFIX>` | `openssl rand -hex 16` 生成 |
+| API 前缀 | `${SUB_STORE_API_PREFIX}` | `openssl rand -hex 16` 生成，不带前导 `/` |
 | Node.js | `v20.x` | 来自 NodeSource 或系统仓库 |
-| 后端监听 | `0.0.0.0:3000` | 仅限本机与 nginx 反代，公网经 `https://sub.minor.link`（见 2.1） |
+| 后端监听 | `0.0.0.0:3000` | 仅限本机与 nginx 反代，公网经 `${SUB_STORE_PUBLIC_BASE}`（见 2.1） |
 | 程序 | `/opt/sub-store/sub-store.bundle.js` | 固定路径 |
 | 数据目录 | `/var/lib/sub-store` | 固定路径 |
 | 环境文件 | `/etc/sub-store.env` | 固定路径 |
@@ -127,61 +128,78 @@ Shadowrocket 是闭源客户端，没有可用于核对实现的官方开源仓�
 | 交互命令 | `/usr/local/bin/sub-store-convert` | 固定路径 |
 | Swap | 2GB，swappiness=10 | 推荐配置 |
 
-### 2.1 当前实际部署值（2026-09-02 记录）
+### 2.1 本地访问配置（direnv）
 
-维护时可按此直连，以下值与上文占位符一一对应：
+仓库只提交 `.envrc.example`。根目录 `.envrc` 保存本机真实值，已加入 `.gitignore`；不要上传、提交或打印该文件。
 
-| 项目 | 实际值 |
+首次在新机器配置（本机已有 `.envrc` 时不要覆盖）：
+
+```bash
+cp .envrc.example .envrc
+chmod 0600 .envrc
+# 在本地编辑器中填写 .envrc，然后授权 direnv 加载
+direnv allow .
+```
+
+修改 `.envrc` 后需要重新 `direnv allow .`。进入项目目录后由本机 direnv hook 自动加载；无 hook 的单次命令可用 `direnv exec . <command>`。
+
+| 项目 | 环境变量 |
 | --- | --- |
-| 服务器 IP | `47.116.182.13` |
-| SSH 用户 | `root` |
-| SSH 私钥路径 | `/Users/doghan/data/cloud/document/SSH_KEY/ALIYUN/aliyun_hdg` |
+| 服务器 IP | `${SUB_STORE_SSH_HOST}` |
+| SSH 用户 / 端口 | `${SUB_STORE_SSH_USER}` / `${SUB_STORE_SSH_PORT}` |
+| SSH 私钥路径 | `${SUB_STORE_SSH_KEY}` |
 | 系统 | Alibaba Cloud Linux 3.2104 U13.1 (OpenAnolis Edition) |
-| API 前缀 | `15abd9705c625da20ba80f1aafc2a1a6` |
+| API 前缀 | `${SUB_STORE_API_PREFIX}` |
 | Node.js | `v20.20.2` |
-| 公网入口（推荐） | `https://sub.minor.link/<PREFIX>`（nginx 443 反代） |
-| 其他公网入口 | `https://minor.link/<PREFIX>`、`http://47.116.182.13:9090/<PREFIX>` |
+| 公网 origin（推荐） | `${SUB_STORE_PUBLIC_BASE}`（nginx 443 反代，不包含 API 前缀） |
+| 转换接口 origin | `${SUB_STORE_API_BASE}`（服务端默认 `http://127.0.0.1:3000`） |
+| 订阅域名 / 主站域名 | `${SUB_STORE_TLS_DOMAIN}` / `${SUB_STORE_SITE_DOMAIN}` |
+| 上游订阅 URL（可选） | `${SUB_STORE_JMS_URL}`，仅在本地维护上游时填写；当前真实值仍在服务器 `/etc/sub-store-refresh.json` |
+| VPN SSH 配置（可选） | `${VPN_SSH_HOST}`、`${VPN_SSH_PORT}`、`${VPN_SSH_USER}`、`${VPN_SSH_KEY}` |
 
 标准登录命令：
 
 ```bash
-ssh -i /Users/doghan/data/cloud/document/SSH_KEY/ALIYUN/aliyun_hdg root@47.116.182.13
+ssh -i "$SUB_STORE_SSH_KEY" -p "$SUB_STORE_SSH_PORT" \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}"
 ```
 
 当前实际架构与第 2 节描述的差异：
 
 - 后端进程监听 `0.0.0.0:3000`，但阿里云安全组**未放行 3000**，公网无法直连。
-- 实际由 nginx（`/etc/nginx/conf.d/sub.minor.link.conf` 等）在 80/443/9090 反代 `/<PREFIX>/` 到 `http://127.0.0.1:3000`，外部一律走 `https://sub.minor.link/<PREFIX>/...`。
-- 客户端订阅链接、脚本输出的对外链接均应使用域名（脚本头部 `PUBLIC_BASE`），`127.0.0.1:3000` 仅限服务器本机（脚本内 `API`/`FILE_API`）。
+- 实际由 nginx（`/etc/nginx/conf.d/${SUB_STORE_TLS_DOMAIN}.conf` 等）在 80/443/9090 反代 `/${SUB_STORE_API_PREFIX}/` 到 `http://127.0.0.1:3000`，外部一律走 `${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/...`。
+- 客户端订阅链接、脚本输出的对外链接均应使用域名（环境变量 `SUB_STORE_PUBLIC_BASE`），`127.0.0.1:3000` 仅限服务器本机（脚本内 `API`/`FILE_API`）。
 
-注意：API 前缀随本仓库公开，泄露风险见下方"安全说明"；若文档外泄应更换前缀（改 `/etc/sub-store.env` 后 `systemctl restart sub-store`，并同步更新脚本头部值）。
+注意：旧版文档曾公开 API 前缀，改用环境变量**不会清除 Git 历史，也不等于轮换凭据**。建议另行更换线上前缀（改 `/etc/sub-store.env` 后 `systemctl restart sub-store`，同步本机 `.envrc`、服务器转换/刷新配置和客户端链接）；本次仅整理本地配置，没有修改线上值或重写 Git 历史。
+
+本机 `.envrc` **不会自动传入 SSH 远端或 systemd/cron**。下文依赖环境变量的服务端命令需在远端显式配置相应变量；不要整份上传 `.envrc`。转换脚本的最小远端配置见第 13 节。dotenv、JSON、nginx 配置均不会自动展开 `${...}`，文中的配置示意必须先用真实环境变量生成后再保存。
 
 ### 访问地址
 
 后端基地址（公网，nginx 反代，客户端一律用这个）：
 
 ```text
-https://sub.minor.link/<PREFIX>
+${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}
 ```
 
 示例订阅地址：
 
 ```text
-https://sub.minor.link/<PREFIX>/share/file/clash-verge
+${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/share/file/clash-verge
 ```
 
 服务器本机调试地址（仅限 SSH 进服务器后使用）：
 
 ```text
-http://127.0.0.1:3000/<PREFIX>
+http://127.0.0.1:3000/${SUB_STORE_API_PREFIX}
 ```
 
 ### 安全说明
 
 - API 前缀只是降低被扫描发现的概率，不是身份认证。
-- 对外已由 nginx 统一提供 HTTPS（`sub.minor.link`）；3000 端口仅限服务器本机访问。
+- 对外已由 nginx 统一提供 HTTPS（`${SUB_STORE_PUBLIC_BASE}`）；3000 端口仅限服务器本机访问。
 - 不要把 SSH 私钥内容写入仓库。部署时只传入私钥路径。
-- 如果这份文档公开，应先更换 API 前缀（步骤见 2.1 注意事项）。
+- 不要提交 `.envrc`、实际订阅 URL、带前缀的真实链接或任何私钥；旧前缀轮换步骤见 2.1 注意事项。
 - 防火墙/安全组**不要**放行 3000 端口（当前配置：仅 nginx 80/443/9090 对外）。
 
 ### 2.2 TLS 证书与自动续期（前置条件）
@@ -190,8 +208,8 @@ http://127.0.0.1:3000/<PREFIX>
 
 | 证书 | 覆盖域名 | 用途 |
 | --- | --- | --- |
-| `sub.minor.link` | `sub.minor.link` | 订阅入口（客户端拉订阅走这里，证书过期会导致客户端报 TLS 验证失败、无法更新订阅） |
-| `minor.link` | `minor.link`、`www.minor.link` | 主站 |
+| `${SUB_STORE_TLS_DOMAIN}` | `${SUB_STORE_TLS_DOMAIN}` | 订阅入口（客户端拉订阅走这里，证书过期会导致客户端报 TLS 验证失败、无法更新订阅） |
+| `${SUB_STORE_SITE_DOMAIN}` | `${SUB_STORE_SITE_DOMAIN}`、`www.${SUB_STORE_SITE_DOMAIN}` | 主站 |
 
 自动续期机制（crontab，root 用户）：
 
@@ -212,8 +230,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ```bash
 certbot certificates                 # 查看两张证书的到期时间
 certbot renew --dry-run              # 演练续期（走测试环境，不真签），验证整条链路
-certbot renew --cert-name sub.minor.link   # 手动续期单张证书，成功后自动 reload nginx
-echo | openssl s_client -connect sub.minor.link:443 -servername sub.minor.link 2>/dev/null | openssl x509 -noout -dates
+certbot renew --cert-name "$SUB_STORE_TLS_DOMAIN"   # 手动续期单张证书，成功后自动 reload nginx
+echo | openssl s_client -connect "${SUB_STORE_TLS_DOMAIN}:443" -servername "$SUB_STORE_TLS_DOMAIN" 2>/dev/null | openssl x509 -noout -dates
 ```
 
 ## 3. 已确认的仓库能力
@@ -314,14 +332,16 @@ backend/dist/sub-store.bundle.js
 连接：
 
 ```bash
-ssh -i <SSH_KEY_PATH> -p 22 root@<SERVER_IP>
+ssh -i "$SUB_STORE_SSH_KEY" -p "$SUB_STORE_SSH_PORT" \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}"
 ```
 
-如果私钥权限过宽，OpenSSH 会拒绝：
+如果私钥权限过宽，OpenSSH 会拒绝；在本机修正权限，不要为了连接而复制或上传私钥：
 
 ```bash
-install -m 600 <SSH_KEY_PATH> /tmp/deploy-key
-ssh -i /tmp/deploy-key -p 22 root@<SERVER_IP>
+chmod 0600 "$SUB_STORE_SSH_KEY"
+ssh -i "$SUB_STORE_SSH_KEY" -p "$SUB_STORE_SSH_PORT" \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}"
 ```
 
 ## 6. 服务器环境检查
@@ -378,9 +398,9 @@ install -d -o substore -g substore -m 0750 /var/lib/sub-store
 本地执行：
 
 ```bash
-scp -i <SSH_KEY_PATH> -P 22 \
+scp -i "$SUB_STORE_SSH_KEY" -P "$SUB_STORE_SSH_PORT" \
   backend/dist/sub-store.bundle.js \
-  root@<SERVER_IP>:/opt/sub-store/sub-store.bundle.js
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}:/opt/sub-store/sub-store.bundle.js"
 ```
 
 服务器设置权限：
@@ -404,14 +424,14 @@ sha256sum /opt/sub-store/sub-store.bundle.js
 openssl rand -hex 16
 ```
 
-创建 `/etc/sub-store.env`：
+创建 `/etc/sub-store.env`（以下是生成后的结构示意，`${SUB_STORE_API_PREFIX}` 必须先替换为环境中的实际值；systemd 不会展开该引用）：
 
 ```dotenv
 NODE_ENV=production
 SUB_STORE_BACKEND_API_HOST=0.0.0.0
 SUB_STORE_BACKEND_API_PORT=3000
 SUB_STORE_BACKEND_PREFIX=1
-SUB_STORE_FRONTEND_BACKEND_PATH=/<PREFIX>
+SUB_STORE_FRONTEND_BACKEND_PATH=/${SUB_STORE_API_PREFIX}
 SUB_STORE_DATA_BASE_PATH=/var/lib/sub-store
 SUB_STORE_CORS_ALLOWED_ORIGINS=
 ```
@@ -496,7 +516,7 @@ active
 
 ```bash
 curl -fsS \
-  http://127.0.0.1:3000/<PREFIX>/api/utils/env
+  "http://127.0.0.1:3000/${SUB_STORE_API_PREFIX}/api/utils/env"
 ```
 
 确认未加前缀时不可访问：
@@ -521,14 +541,14 @@ curl -fsS \
     "data":"ss://YWVzLTEyOC1nY206cGFzcw@127.0.0.1:8388#test",
     "client":"mihomo"
   }' \
-  http://127.0.0.1:3000/<PREFIX>/api/proxy/parse
+  "http://127.0.0.1:3000/${SUB_STORE_API_PREFIX}/api/proxy/parse"
 ```
 
 公网验证（当前走 nginx 域名，3000 端口对外不通属正常）：
 
 ```bash
 curl -fsS \
-  https://sub.minor.link/<PREFIX>/api/utils/env
+  "${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/api/utils/env"
 ```
 
 ## 12. Swap 配置
@@ -558,25 +578,52 @@ echo 'vm.vfs_cache_pressure=50' >> /etc/sysctl.conf
 docs/deployment/sub-store-convert.sh
 ```
 
-安装方式：修改脚本头部的 `<PREFIX>`、`<PUBLIC_BASE>` 和 `<SERVER_IP>` 为实际部署值（`PUBLIC_BASE` 是客户端访问用的对外基地址，当前为 `https://sub.minor.link`），然后上传到服务器：
+脚本直接读取环境变量，不再替换源码中的占位符。本地由 direnv 加载；部署到服务器时，只传输转换脚本所需的最小配置（不是整份 `.envrc`）：
 
 ```bash
-scp -i <SSH_KEY_PATH> docs/deployment/sub-store-convert.sh \
-  root@<SERVER_IP>:/usr/local/bin/sub-store-convert
-chmod 0755 /usr/local/bin/sub-store-convert
+scp -i "$SUB_STORE_SSH_KEY" -P "$SUB_STORE_SSH_PORT" \
+  docs/deployment/sub-store-convert.sh \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}:/usr/local/bin/sub-store-convert"
+
+# 本地执行：从环境变量生成 shell 配置，经 SSH 标准输入写入远端 0600 文件。
+# 不传输 SSH 私钥、本机路径或上游订阅凭据。
+python3 - <<'PY' | ssh -i "$SUB_STORE_SSH_KEY" -p "$SUB_STORE_SSH_PORT" \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}" \
+  'umask 077; cat > /etc/sub-store-convert.env; chmod 0600 /etc/sub-store-convert.env; chmod 0755 /usr/local/bin/sub-store-convert'
+import os
+import shlex
+
+for name in ("SUB_STORE_API_PREFIX", "SUB_STORE_PUBLIC_BASE"):
+    value = os.environ[name]
+    if not value:
+        raise SystemExit("Missing environment variable: " + name)
+    print("export " + name + "=" + shlex.quote(value))
+print("export SUB_STORE_API_BASE=http://127.0.0.1:3000")
+PY
 ```
 
-脚本中的以下值必须与实际部署一致：
+支持的环境变量：
 
 ```bash
-API='http://127.0.0.1:3000/<PREFIX>/api/proxy/parse'
-FILE_API='http://127.0.0.1:3000/<PREFIX>/api'
-PREFIX='<PREFIX>'
-PUBLIC_BASE='<PUBLIC_BASE>'
-SERVER_IP='<SERVER_IP>'
+# 必填：从本机 .envrc 或服务器配置读取，不要把真实值写回源码。
+# SUB_STORE_API_PREFIX：不带 / 的 API 前缀
+# SUB_STORE_PUBLIC_BASE：客户端使用的公网 origin，不含 API 前缀
+# SUB_STORE_API_BASE：后端 origin，默认 http://127.0.0.1:3000
+# SUB_STORE_CONVERT_ENV_FILE：可选服务器配置路径，默认 /etc/sub-store-convert.env
+
+# 本地运行时使用公网 origin，避免请求本机 3000 端口：
+SUB_STORE_API_BASE="$SUB_STORE_PUBLIC_BASE" bash docs/deployment/sub-store-convert.sh
 ```
 
 脚本只保留快照模式（历史版本曾包含实时模式与 artifact 定时任务，2026-09-02 移除：实时 `/download` 只能输出节点列表，无法生成完整配置，与生产需求不符；节点自动刷新改由 `sub-store-refresh` 定时任务负责，见 18.1 节）。
+
+本地无网络回归检查（只使用模拟 curl，不访问真实订阅）：
+
+```bash
+bash -n docs/deployment/sub-store-convert.sh
+shellcheck docs/deployment/sub-store-convert.sh
+python3 docs/deployment/test-sub-store-convert.py
+```
 
 ### 13.1 菜单结构
 
@@ -602,10 +649,10 @@ Sub-Store 订阅管理
 
 ```text
 订阅链接：
-  <PUBLIC_BASE>/<PREFIX>/share/file/<NAME>
+  ${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/share/file/<NAME>
 ```
 
-当前 `PUBLIC_BASE` 为 `https://sub.minor.link`。
+实际公网 origin 来自本机 `.envrc` 或服务器配置中的 `SUB_STORE_PUBLIC_BASE`。
 
 ### 13.3 删除操作
 
@@ -805,7 +852,7 @@ failed to fetch remote profile: platform TLS verifier failed: Request failed; st
 
 **根因链**：
 
-1. `sub.minor.link` / `minor.link` 两张证书 9 月 4 日过期。
+1. `${SUB_STORE_TLS_DOMAIN}` / `${SUB_STORE_SITE_DOMAIN}` 两张证书 9 月 4 日过期。
 2. certbot crontab（每月 1 号）在 9 月 1 日实际执行了，但**静默失败**——`--quiet` 且无日志重定向，没有任何告警。
 3. 失败原因：cron 精简环境下 certbot 的 nginx 插件报 `NoInstallationError: Could not find a usable 'nginx' binary`（`/var/log/letsencrypt/letsencrypt.log.2` 可查证）。
 4. 6 月 6 日签发的 90 天证书，7 月、8 月 1 日因"距到期超 30 天"被 certbot 正常跳过，9 月 1 日第一次真正需要续期时就撞上了插件问题，三天后过期。
@@ -824,7 +871,8 @@ failed to fetch remote profile: platform TLS verifier failed: Request failed; st
 登录服务器：
 
 ```bash
-ssh -i <SSH_KEY_PATH> root@<SERVER_IP>
+ssh -i "$SUB_STORE_SSH_KEY" -p "$SUB_STORE_SSH_PORT" \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}"
 ```
 
 运行：
@@ -864,11 +912,11 @@ sub-store-convert
 
 ```json
 {
-  "api": "http://127.0.0.1:3000/<PREFIX>/api",
+  "api": "http://127.0.0.1:3000/${SUB_STORE_API_PREFIX}/api",
   "subs": [
     {
       "name": "JMS",
-      "url": "<上游订阅 URL>",
+      "url": "${SUB_STORE_JMS_URL}",
       "mode": "whitelist",
       "rule_source": "github-proxy"
     }
@@ -876,6 +924,7 @@ sub-store-convert
 }
 ```
 
+- 上述 JSON 是结构示意，不可原样保存：JSON 不会展开环境变量；生成配置时应从环境读取真实值。线上已有配置无需为此次本地整理重写。
 - `mode`：`whitelist` 或 `blacklist`，与交互脚本快照模式的规则策略一致。
 - `rule_source`：`github-proxy`（推荐）/ `jsdelivr-proxy` / `jsdelivr`。
 - 刷新失败时保留旧内容不覆盖，退出码非 0。
@@ -886,7 +935,7 @@ sub-store-convert
 
 | 名称 | 上游 | 策略 |
 | --- | --- | --- |
-| JMS | `https://jmssub.net/members/getsub.php?service=867908&id=...` | whitelist |
+| JMS | `${SUB_STORE_JMS_URL}`（真实值保留在服务器私有配置中） | whitelist |
 | US-COMPANY | 待用户提供上游 URL | - |
 | ~~ip-test~~ | - | 已废弃删除（2026-09-02） |
 
@@ -899,6 +948,56 @@ crontab -l                                # 查看定时任务
 ```
 
 **历史说明**：脚本曾提供实时模式（`/api/subs` + `/download` 链接，配合 Sub-Store 原生 artifact 定时任务），因其只能输出节点列表、无法生成完整配置，已于 2026-09-02 从脚本与文档中移除，服务器上已导入的实时订阅（JMS）也已删除。
+
+### 18.2 VPN 换 IP：从 sing-box 同步 US-COMPANY
+
+独立使用说明、参数、记录和故障处理见 [VPN 换 IP 与 Sub-Store 订阅同步](update-vpn-ip.md)。
+
+本地脚本：`scripts/update-vpn-ip.py`。根目录 `.envrc` 中的 `VPN_SSH_*` 用于 VPN 服务器，`SUB_STORE_SSH_*` 用于订阅服务器。真实 IP、用户、密钥路径不写进脚本。
+
+**流程：**
+
+1. 用输入的新 IP 登录 VPN，确认 `sing-box` 正在运行，读取 `/etc/sing-box/config.json` 和 `/etc/sing-box/conf/*.json`。
+2. 从当前配置读取 UUID、端口、Flow、SNI、REALITY 公钥和 Short ID。不是复用旧节点，也不是访问一个不存在的 HTTP 订阅入口；配置中的私钥不会被传回本机。
+3. 登录 Sub-Store 服务器，从 `/etc/sub-store.env` 读取线上实际 API 前缀，通过本机 API 读取 `US-COMPANY` 快照。
+4. 更新唯一的 VLESS-REALITY 节点，若名称中含旧 IP 则同步改名及策略组/规则引用，保留其他节点、规则、策略和文件元数据。YAML 可能重新排版，注释不保留。
+5. 正式执行时先备份，使用 `PATCH /api/file/:name` 更新，重新读取文件及 `/share/file/:name` 校验。失败时尽可能恢复原内容；遇到其他写入则不盲目覆盖。
+6. 线上确认成功后，原子更新本机 `.envrc` 的 `VPN_SSH_HOST`，将时间、前后 IP、订阅名和备份路径追加到 `.direnv/vpn-ip-history.jsonl`。不记录 UUID、密钥或完整节点链接。
+
+先预览（把示例保留地址换成真实新 IP）：
+
+```bash
+direnv exec . python3 scripts/update-vpn-ip.py 192.0.2.20 --dry-run
+```
+
+确认后执行：
+
+```bash
+direnv exec . python3 scripts/update-vpn-ip.py 192.0.2.20
+# .envrc 发生变更，按 direnv 的安全机制重新授权：
+direnv allow .
+```
+
+客户端只需刷新原订阅，分享 URL 不变。脚本不会修改 VPN 服务端配置、重启服务、替换密钥或修改 JMS。
+
+**依赖和范围：**
+
+- 本机：Python 3 标准库、OpenSSH、Git、已配置的 direnv；无需 PyYAML。
+- VPN：当前 233boy 部署布局、`jq`、systemd；公钥读取自配置中的 `public_key_...` 标记，绝不重新生成密钥。支持单用户 VLESS-REALITY TCP；端口、UUID、Short ID 等以此次读取为准。
+- 订阅服务器：Python 3.6+、PyYAML、运行中的 Sub-Store、本机 `127.0.0.1:3000` API，SSH 用户需能读取后端环境文件并写入备份目录（当前为 root）。
+- 多入站时用 `--inbound-tag '<TAG>'`；快照含多个 REALITY 节点时用 `--node-name '<NAME>'`；非默认快照用 `--subscription '<NAME>'`。有歧义会停止，不批量替换未知节点。
+- 受 `/etc/sub-store-refresh.json` 管理的订阅、远端来源或带后处理器的快照会被拒绝，避免覆盖或后续定时任务改回。
+- 已知 SSH 主机密钥不匹配时停止，**不会关闭主机校验**；首次连接新 IP 使用 `accept-new`，可能写入本机 `known_hosts`（包括预览模式）。
+- 预览不写订阅、备份、`.envrc` 或 IP 历史；正式执行的备份在订阅服务器 `/var/backups/sub-store-vpn/`（目录 `0700`、文件 `0600`）。备份含原节点凭据，不要复制到仓库。
+- 本机和远端均有脚本间互斥锁，写入前复核快照摘要；Sub-Store API 不支持原子比较交换，操作期间不要在其他工具中同时编辑该订阅。
+- SSH 在写入阶段中断时，线上可能已完成更新；应先预览核对状态及服务器备份。线上成功而本地落盘失败时需手动修正 `.envrc`。此类失败不会伪报整体成功。
+- 这里校验的是 Sub-Store 存储及输出的配置，不等同于从客户端完成一次真实代理连通性测试。
+
+离线回归测试（模拟 API，不连接真实服务器）：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-update-vpn-ip.py
+```
 
 ## 19. 运维命令
 
@@ -992,8 +1091,10 @@ cp /opt/sub-store/sub-store.bundle.js \
 上传并重启：
 
 ```bash
-scp dist/sub-store.bundle.js root@<SERVER_IP>:/opt/sub-store/
-ssh root@<SERVER_IP> 'systemctl restart sub-store'
+scp -i "$SUB_STORE_SSH_KEY" -P "$SUB_STORE_SSH_PORT" dist/sub-store.bundle.js \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}:/opt/sub-store/"
+ssh -i "$SUB_STORE_SSH_KEY" -p "$SUB_STORE_SSH_PORT" \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}" 'systemctl restart sub-store'
 ```
 
 ## 21. 卸载
@@ -1034,7 +1135,7 @@ userdel substore
 - [ ] systemd 开机启动
 - [ ] 随机 API 前缀生效
 - [ ] 无前缀 API 返回 404
-- [ ] 公网 `https://sub.minor.link/<PREFIX>/api/utils/env` 可访问
+- [ ] 公网 `${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/api/utils/env` 可访问
 - [ ] Mihomo 节点转换成功
 - [ ] Clash Verge 完整配置生成成功
 - [ ] Shadowrocket 订阅 URL 生成成功
@@ -1045,7 +1146,8 @@ userdel substore
 - [ ] `sub-store-refresh` 手动执行成功，`/share/file/JMS` 返回 200 且内容更新
 - [ ] crontab 首行有 `PATH=` 声明，certbot 行有日志重定向（见 2.2）
 - [ ] `certbot renew --dry-run` 全部证书通过，`certbot certificates` 无过期
-- [ ] `/usr/local/bin/sub-store-convert` 与仓库脚本一致（占位符替换后 diff 为空）
+- [ ] `/usr/local/bin/sub-store-convert` 与仓库脚本一致（无需占位符替换），远端配置文件权限为 0600
+- [ ] `.envrc` 权限为 0600，`git check-ignore .envrc` 命中，已跟踪文件不含真实访问凭据
 - [ ] Swap 2GB 配置完成
 - [ ] 在线规则通过 `PROXY` 下载
 - [ ] 重复 GEOIP 和额外 MMDB 初始化已移除

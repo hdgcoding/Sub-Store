@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # Sub-Store 交互式订阅管理脚本（快照模式，节点自动刷新由 sub-store-refresh 定时任务负责）
-# 部署前必须把下方 <PREFIX> / <PUBLIC_BASE> / <SERVER_IP> 替换为实际部署值
+# 本地由 direnv 加载环境变量；服务器可使用权限 0600 的 /etc/sub-store-convert.env
 set -euo pipefail
 
-API='http://127.0.0.1:3000/<PREFIX>/api/proxy/parse'
-FILE_API='http://127.0.0.1:3000/<PREFIX>/api'
-PREFIX='<PREFIX>'
-PUBLIC_BASE='<PUBLIC_BASE>'
-SERVER_IP='<SERVER_IP>'
+CONFIG_FILE=${SUB_STORE_CONVERT_ENV_FILE:-/etc/sub-store-convert.env}
+if [[ -f $CONFIG_FILE ]]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+fi
+
+: "${SUB_STORE_API_PREFIX:?请通过 direnv 或服务器配置设置 SUB_STORE_API_PREFIX}"
+: "${SUB_STORE_PUBLIC_BASE:?请通过 direnv 或服务器配置设置 SUB_STORE_PUBLIC_BASE}"
+[[ $SUB_STORE_API_PREFIX =~ ^[A-Za-z0-9_-]+$ ]] || {
+    echo 'SUB_STORE_API_PREFIX 只能包含字母、数字、下划线和短横线，不带斜杠。' >&2
+    exit 1
+}
+
+PREFIX=$SUB_STORE_API_PREFIX
+PUBLIC_BASE=${SUB_STORE_PUBLIC_BASE%/}
+API_BASE=${SUB_STORE_API_BASE:-http://127.0.0.1:3000}
+FILE_API="${API_BASE%/}/$PREFIX/api"
+API="$FILE_API/proxy/parse"
 
 command -v curl >/dev/null || { echo '缺少 curl。' >&2; exit 1; }
 command -v python3 >/dev/null || { echo '缺少 python3。' >&2; exit 1; }
@@ -42,7 +55,7 @@ check_service() {
     local status
     status=$(curl -sS -o /dev/null -w '%{http_code}' "$FILE_API/utils/env" || true)
     if [[ $status != 2* ]]; then
-        echo "无法连接 Sub-Store 后端 ($FILE_API/utils/env HTTP $status)。" >&2
+        echo "无法连接 Sub-Store 后端 (HTTP $status)，请检查地址和 API 前缀配置。" >&2
         return 1
     fi
 }
@@ -290,7 +303,7 @@ RULES
         OUTPUT=${OUTPUT:-$DEFAULT_OUTPUT}
     fi
 
-    export API FILE_API PREFIX PUBLIC_BASE SERVER_IP SOURCE TARGET OUTPUT PUBLISH_NAME
+    export API FILE_API PREFIX PUBLIC_BASE SOURCE TARGET OUTPUT PUBLISH_NAME
     export POLICY_MODE RULE_SOURCE CUSTOM_RULES CUSTOM_POLICIES FALLBACK
 
     python3 - <<'PY'

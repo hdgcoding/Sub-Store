@@ -16,6 +16,11 @@ Advanced Subscription Manager for QX, Loon, Surge, Stash, Egern and Shadowrocket
 
 [📚 文档/DOC](https://github.com/sub-store-org/Sub-Store/wiki)
 
+## 本仓库自部署运维
+
+- [Sub-Store 后端部署与维护](docs/deployment/sub-store-backend-deployment.md)
+- [VPN 换 IP 与订阅同步脚本使用说明](docs/deployment/update-vpn-ip.md)
+
 ## sub.store Domain Safety Notice
 
 ### Statement
