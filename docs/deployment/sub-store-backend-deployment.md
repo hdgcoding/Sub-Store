@@ -6,13 +6,13 @@
 
 ## 当前状态速览（AI / 新维护者先读这里）
 
-> 本文档主体是按时间顺序沉淀的部署记录（第 4-17 节为首次部署的历史操作步骤），**当前实际状态以下表和 2.1、18.1 节为准**。执行变更前先对照本节确认，不要盲目按历史章节重做。
+> 本文档主体是按时间顺序沉淀的部署记录（第 4-17 节为首次部署的历史操作步骤），**当前实际状态以下表和 2.1、2.3、18.1 节为准**。执行变更前先对照本节确认，不要盲目按历史章节重做。
 
 | 项 | 当前状态 |
 | --- | --- |
 | 服务器 | 阿里云 `${SUB_STORE_SSH_HOST}`（Alibaba Cloud Linux 3，Node v20.20.2），SSH 信息见 2.1 |
-| 后端 | systemd 服务 `sub-store`，监听 `0.0.0.0:3000`，数据目录 `/var/lib/sub-store` |
-| 对外入口 | nginx 443 反代 → `${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/...`（3000 端口未对公网放行，**这是刻意配置**） |
+| 后端 | systemd 服务 `sub-store`，仅监听 `127.0.0.1:3000`，数据目录 `/var/lib/sub-store` |
+| 对外入口 | nginx 仅反代 `${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/share/file/...` 的 GET/HEAD；公网管理接口返回 404 |
 | TLS 证书 | Let's Encrypt，`${SUB_STORE_SITE_DOMAIN}` + `${SUB_STORE_TLS_DOMAIN}` 两张，crontab 每月 1 号自动续期（前置条件见 2.2，踩坑记录见 17.8） |
 | 使用模式 | 仅快照模式：`/share/file/<NAME>` 输出完整白名单 Mihomo 配置 |
 | 节点保鲜 | crontab `23 * * * *` 运行 `/usr/local/bin/sub-store-refresh`（配置 `/etc/sub-store-refresh.json`），同名覆盖发布，订阅 URL 永不变化 |
@@ -29,6 +29,7 @@
 | 手动立即刷新 / 看刷新日志 | 18.1 手动操作 |
 | 发布一个新订阅（首次） | 13 菜单 1，然后 18.1 纳入刷新 |
 | 更换 API 前缀 | 9（后端 env）+ 13（转换脚本环境文件）+ 18.1（刷新配置），同步本机 `.envrc` 和客户端链接后重启 |
+| 公网下载限制、前缀轮换和本地 SSH 隧道 | 2.3 |
 | 升级后端版本 | 20 |
 | 排错 | 19（运维命令）+ 17（历史踩坑） |
 | 从零重装 / 换机 | 4 → 7 → 8 → 9 → 10 → 13 → 18.1 → 22 |
@@ -120,7 +121,7 @@ Shadowrocket 是闭源客户端，没有可用于核对实现的官方开源仓�
 | 系统 | Alibaba Cloud Linux 3 / Debian 等 | 具体版本以实际为准 |
 | API 前缀 | `${SUB_STORE_API_PREFIX}` | `openssl rand -hex 16` 生成，不带前导 `/` |
 | Node.js | `v20.x` | 来自 NodeSource 或系统仓库 |
-| 后端监听 | `0.0.0.0:3000` | 仅限本机与 nginx 反代，公网经 `${SUB_STORE_PUBLIC_BASE}`（见 2.1） |
+| 后端监听 | `127.0.0.1:3000` | 仅限本机与 nginx 反代，公网仅开放订阅下载（见 2.3） |
 | 程序 | `/opt/sub-store/sub-store.bundle.js` | 固定路径 |
 | 数据目录 | `/var/lib/sub-store` | 固定路径 |
 | 环境文件 | `/etc/sub-store.env` | 固定路径 |
@@ -166,17 +167,17 @@ ssh -i "$SUB_STORE_SSH_KEY" -p "$SUB_STORE_SSH_PORT" \
 
 当前实际架构与第 2 节描述的差异：
 
-- 后端进程监听 `0.0.0.0:3000`，但阿里云安全组**未放行 3000**，公网无法直连。
-- 实际由 nginx（`/etc/nginx/conf.d/${SUB_STORE_TLS_DOMAIN}.conf` 等）在 80/443/9090 反代 `/${SUB_STORE_API_PREFIX}/` 到 `http://127.0.0.1:3000`，外部一律走 `${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/...`。
+- 后端进程仅监听 `127.0.0.1:3000`，阿里云安全组也不放行 3000。
+- nginx 的主订阅域名、主站和 80/9090 备用入口均仅反代 `/${SUB_STORE_API_PREFIX}/share/file/` 的 GET/HEAD；同前缀下其他路径返回 404，下载请求的查询参数不传给后端。
 - 客户端订阅链接、脚本输出的对外链接均应使用域名（环境变量 `SUB_STORE_PUBLIC_BASE`），`127.0.0.1:3000` 仅限服务器本机（脚本内 `API`/`FILE_API`）。
 
-注意：旧版文档曾公开 API 前缀，改用环境变量**不会清除 Git 历史，也不等于轮换凭据**。建议另行更换线上前缀（改 `/etc/sub-store.env` 后 `systemctl restart sub-store`，同步本机 `.envrc`、服务器转换/刷新配置和客户端链接）；本次仅整理本地配置，没有修改线上值或重写 Git 历史。
+注意：旧版文档曾公开 API 前缀。2026-11-17 已轮换线上前缀、使旧链接失效，并关闭公网管理接口；新值只保存于本机和服务器私有配置中，未写入仓库。Git 历史未重写。再次轮换时，必须同步后端、所有 nginx 入口、本机 `.envrc`、转换/刷新配置及客户端链接，不能只改一个环境变量。
 
 本机 `.envrc` **不会自动传入 SSH 远端或 systemd/cron**。下文依赖环境变量的服务端命令需在远端显式配置相应变量；不要整份上传 `.envrc`。转换脚本的最小远端配置见第 13 节。dotenv、JSON、nginx 配置均不会自动展开 `${...}`，文中的配置示意必须先用真实环境变量生成后再保存。
 
 ### 访问地址
 
-后端基地址（公网，nginx 反代，客户端一律用这个）：
+公网订阅基地址（仅其下 `/share/file/...` 可下载，不能用于管理 API）：
 
 ```text
 ${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}
@@ -197,6 +198,7 @@ http://127.0.0.1:3000/${SUB_STORE_API_PREFIX}
 ### 安全说明
 
 - API 前缀只是降低被扫描发现的概率，不是身份认证。
+- 公网管理接口已关闭；持有订阅链接者仍可下载配置，分享时视为访问凭据，不要公开发布。
 - 对外已由 nginx 统一提供 HTTPS（`${SUB_STORE_PUBLIC_BASE}`）；3000 端口仅限服务器本机访问。
 - 不要把 SSH 私钥内容写入仓库。部署时只传入私钥路径。
 - 不要提交 `.envrc`、实际订阅 URL、带前缀的真实链接或任何私钥；旧前缀轮换步骤见 2.1 注意事项。
@@ -233,6 +235,33 @@ certbot renew --dry-run              # 演练续期（走测试环境，不真�
 certbot renew --cert-name "$SUB_STORE_TLS_DOMAIN"   # 手动续期单张证书，成功后自动 reload nginx
 echo | openssl s_client -connect "${SUB_STORE_TLS_DOMAIN}:443" -servername "$SUB_STORE_TLS_DOMAIN" 2>/dev/null | openssl x509 -noout -dates
 ```
+
+### 2.3 公网仅保留订阅下载（2026-11-17）
+
+- 后端仅监听 `127.0.0.1:3000`，管理走 SSH 或 SSH 隧道，不依赖安全组作为唯一屏障。
+- 主订阅域名、主站及 80/9090 备用入口均只转发新前缀下 `/share/file/` 的 GET/HEAD，写方法返回 403；同前缀下 `/api/...` 等其他路径返回 404。
+- nginx 丢弃下载请求的查询参数，避免公开调用接口参数来覆盖快照来源或内容。
+- 旧前缀被显式拦截为 404，避免落入主站的 SPA 页面而误报为成功。
+- 服务端 `sub-store-convert` 已部署为环境变量版本，配置 `/etc/sub-store-convert.env` 权限 0600；自动刷新仍使用本机 API。
+- 本次配置备份在服务器 `/var/backups/sub-store-access/`，目录及文件私有；不要把备份复制到仓库。
+- 更换前缀不需要换域名、证书或 VPN 节点参数，但客户端必须替换旧订阅链接。
+
+本地管理需要先建立隧道（一个终端保持运行）：
+
+```bash
+ssh -i "$SUB_STORE_SSH_KEY" -p "$SUB_STORE_SSH_PORT" \
+  -o ExitOnForwardFailure=yes -N \
+  -L 127.0.0.1:13000:127.0.0.1:3000 \
+  "${SUB_STORE_SSH_USER}@${SUB_STORE_SSH_HOST}"
+```
+
+另一个已加载 direnv 的终端中：
+
+```bash
+SUB_STORE_API_BASE=http://127.0.0.1:13000 bash docs/deployment/sub-store-convert.sh
+```
+
+换 IP 脚本直接通过 SSH 调用远端本机 API，不需要额外开隧道，也不受公网管理关闭影响。
 
 ## 3. 已确认的仓库能力
 
@@ -428,7 +457,7 @@ openssl rand -hex 16
 
 ```dotenv
 NODE_ENV=production
-SUB_STORE_BACKEND_API_HOST=0.0.0.0
+SUB_STORE_BACKEND_API_HOST=127.0.0.1
 SUB_STORE_BACKEND_API_PORT=3000
 SUB_STORE_BACKEND_PREFIX=1
 SUB_STORE_FRONTEND_BACKEND_PATH=/${SUB_STORE_API_PREFIX}
@@ -544,11 +573,15 @@ curl -fsS \
   "http://127.0.0.1:3000/${SUB_STORE_API_PREFIX}/api/proxy/parse"
 ```
 
-公网验证（当前走 nginx 域名，3000 端口对外不通属正常）：
+公网验证（管理接口应返回 404；订阅下载单独验证为 200）：
 
 ```bash
-curl -fsS \
+curl -sS -o /dev/null -w '%{http_code}\n' \
   "${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/api/utils/env"
+# 预期 404
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  "${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/share/file/US-COMPANY"
+# 预期 200
 ```
 
 ## 12. Swap 配置
@@ -611,8 +644,8 @@ PY
 # SUB_STORE_API_BASE：后端 origin，默认 http://127.0.0.1:3000
 # SUB_STORE_CONVERT_ENV_FILE：可选服务器配置路径，默认 /etc/sub-store-convert.env
 
-# 本地运行时使用公网 origin，避免请求本机 3000 端口：
-SUB_STORE_API_BASE="$SUB_STORE_PUBLIC_BASE" bash docs/deployment/sub-store-convert.sh
+# 本地运行需先建立第 2.3 节的 SSH 隧道，不能使用公网 origin 调管理 API：
+SUB_STORE_API_BASE=http://127.0.0.1:13000 bash docs/deployment/sub-store-convert.sh
 ```
 
 脚本只保留快照模式（历史版本曾包含实时模式与 artifact 定时任务，2026-09-02 移除：实时 `/download` 只能输出节点列表，无法生成完整配置，与生产需求不符；节点自动刷新改由 `sub-store-refresh` 定时任务负责，见 18.1 节）。
@@ -1135,7 +1168,9 @@ userdel substore
 - [ ] systemd 开机启动
 - [ ] 随机 API 前缀生效
 - [ ] 无前缀 API 返回 404
-- [ ] 公网 `${SUB_STORE_PUBLIC_BASE}/${SUB_STORE_API_PREFIX}/api/utils/env` 可访问
+- [ ] 公网新前缀下 `/api/...` 返回 404；旧前缀订阅返回 404
+- [ ] 公网新前缀下 `/share/file/...` GET/HEAD 返回 200，POST 等写方法返回 403
+- [ ] 后端只监听 `127.0.0.1:3000`，本机管理 API 和 SSH 管理正常
 - [ ] Mihomo 节点转换成功
 - [ ] Clash Verge 完整配置生成成功
 - [ ] Shadowrocket 订阅 URL 生成成功

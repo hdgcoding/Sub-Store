@@ -6,7 +6,7 @@ export SUB_STORE_SSH_USER='root'
 export SUB_STORE_SSH_KEY=''
 export SUB_STORE_API_PREFIX=''
 # Loopback is for commands executed on the deployment server.
-# For local conversion, set this to the public origin or an SSH tunnel origin.
+# Public management is blocked; use an SSH tunnel origin for local conversion.
 export SUB_STORE_API_BASE='http://127.0.0.1:3000'
 export SUB_STORE_TLS_DOMAIN=''
 export SUB_STORE_SITE_DOMAIN=''

@@ -53,6 +53,8 @@ direnv allow .
 
 API 前缀在 SSH 远端从 `/etc/sub-store.env` 读取，不把本机整份 `.envrc` 上传到服务器。完整环境变量模板见 [`.envrc.example`](../../.envrc.example)。
 
+当前公网只允许下载订阅，管理 API 已关闭；本脚本通过 SSH 调用远端本机 API，因此仍可正常使用。若要在本地运行交互转换脚本，应先建立[部署记录](sub-store-backend-deployment.md)第 2.3 节的 SSH 隧道。
+
 ## 实际执行流程
 
 1. **检查新 IP 的 VPN。** 确认 sing-box 正在运行且配置校验通过，读取主配置及 `conf/*.json` 中的 VLESS-REALITY 入站。
